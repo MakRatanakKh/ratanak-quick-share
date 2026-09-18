@@ -1,0 +1,19 @@
+# Python virtual environments and caches
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Generated builds
+build/
+dist/
+*.spec
+
+# Local sharing folders and editor settings
+QuickShareFiles/
+RatanakQuickShareFiles/
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
