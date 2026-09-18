@@ -1,42 +1,32 @@
-# RatanakQuickShare · Windows ↔ phone
+# RatanakQuickShare v1.4 — Windows ↔ phone
 
-Version 1.3 renames the app to RatanakQuickShare and retains vertical scrolling, mouse-wheel support and a resizable Windows interface. No new dependencies.
-
-Transfer files and clipboard text between your Windows PC and an Android or iPhone browser over **trusted local Wi-Fi**, without a phone app, account, or cloud storage.
+Share files and clipboard text with your Android or iPhone browser over a **trusted, private LAN**. No phone app or cloud account is needed. This version adds short-lived, single-use QR codes, Windows approval, per-browser revocable sessions, interface binding, network filtering, timeouts and upload resource limits. **Traffic is still unencrypted HTTP: this is not safe for hostile or public Wi-Fi.**
 
 ## Run on Windows
 
-1. Install Python 3.11 or newer from https://www.python.org/downloads/windows/ .
-2. Download/clone this repository, keeping the `assets` directory next to the Python files.
-3. Double-click **`START_WINDOWS.bat`**. It creates a project-local **`.venv`** on first run, installs dependencies *only inside it*, and always launches using `.venv\Scripts\python.exe`. First setup requires internet access.
-4. If prompted by Windows Firewall, allow Python on **Private networks only**.
-5. Connect PC and phone to the same trusted Wi-Fi, scan the QR code in the RatanakQuickShare window and open the link.
-6. Add Windows files using **Add files for phone…**, or upload files from the phone webpage. Clipboard syncing is disabled until you enable it in the Windows window.
+1. Install Python 3.11 or later and download/extract the whole project, including `assets/`.
+2. Double-click `START_WINDOWS.bat`. On first run it creates `.venv/` in this directory and installs QR/Pillow requirements **inside that virtual environment only**. No global packages are installed. First run requires internet access.
+3. Allow access in Windows Firewall on **Private networks only**. Connect phone and PC to the same trusted Wi-Fi. Choose the PC's Wi-Fi IP address in the dropdown; changing it restarts the server, disconnects browsers, and invalidates pairing.
+4. Scan the displayed QR code within 60 seconds. On your phone, compare the six-digit code with the new request in the Windows app, then click **Approve** on Windows. Never approve an unexpected request. Approvals expire after 90 seconds.
+5. Your phone browser opens the sharing page. Upload phone files to Inbox, or explicitly select PC files to offer from Outbox. Clipboard sync remains off until you check its box on Windows.
 
-The Windows GUI has a scrollbar on the right and supports mouse-wheel scrolling, including when the window is shorter than its contents. You can launch manually with `.venv\Scripts\python.exe quickshare.py` from the project directory. Do not install with global `pip`. The only use of system Python is to create `.venv`; all app packages remain private to the project. If you relocate the project, recreate `.venv` in the new location.
+The Windows window scrolls vertically, including mouse-wheel support. `Reset pairing` revokes all sessions and pending requests; you can also disconnect an individual browser under Device security. Each browser session expires after one hour; re-pair when necessary. A pairing QR can be used only once and is refreshed automatically after scanning or expiry.
 
-## Shared folders
+## Data and limits
 
-A new installation stores explicitly shared files in `%USERPROFILE%\RatanakQuickShareFiles\Outbox` and phone uploads in `%USERPROFILE%\RatanakQuickShareFiles\Inbox`. When upgrading from QuickShare v1.x, an existing `%USERPROFILE%\QuickShareFiles` is reused automatically so your old shared files remain available. The app does not publish your entire PC. Empty the Outbox to stop offering a file for download.
+- A new installation uses `%USERPROFILE%\RatanakQuickShareFiles\Inbox` and `Outbox`. Existing `%USERPROFILE%\QuickShareFiles` is reused for upgrades. Only explicitly shared Outbox files are downloadable.
+- Files upload individually: maximum **128 MiB each**, **1 GiB total Inbox quota**, up to **2 concurrent uploads**. There is a maximum of 12 active connections and a 12-second socket inactivity timeout. Large transfers on slow Wi-Fi may time out. Remove Inbox files to free quota. Do not upload untrusted files; treat them like any other download before opening them.
+- The server binds only to the IP selected in the Windows dropdown on port 8765 and admits only its IPv4 /24 subnet (or loopback for localhost testing). Networks using a larger/different subnet can be excluded. This is not a substitute for Windows Firewall, nor does it prevent malicious devices already on that subnet.
+- Phone browsers cannot silently access the phone clipboard on HTTP; phone-to-PC text needs an explicit Send action, and copying PC text may require manual selection. Clipboard syncing exposes copied text to any currently approved browser, so avoid passwords and private data.
 
-## Optional Windows executable
+## Security limitations
 
-Double-click `BUILD_EXE_WINDOWS.bat` on Windows. It creates/reuses the same `.venv`, installs PyInstaller only there, and produces `dist\RatanakQuickShare.exe`. The EXE bundles its Python runtime and assets; it must be built on Windows. There is no installer, auto-start, code-signing certificate or system tray feature yet. Generated `dist/`, `build/` and `.venv/` folders are excluded from Git.
+**HTTP traffic has no encryption or authenticated server identity.** A network attacker who can observe or interfere with traffic may steal the pairing link, pending approval ticket, session cookie, files, or clipboard content; they may also impersonate a browser. A Windows approval is not a substitute for HTTPS. Use only a trusted private Wi-Fi network, do not port-forward the server, and never treat this version as secure on public, guest or hotel networks. For hostile networks, add properly validated HTTPS or a trusted encrypted tunnel instead. Binding to an interface and filtering IPs do not establish device identity.
 
-## Phone browser limitations
+Passwords or credentials are not stored by the application. Session tokens, pairing links and tickets live in memory and are lost on close. Cookies use `HttpOnly` and `SameSite=Strict`, and the server checks Origin for mutating API calls; CSRF controls do not prevent on-path HTTP interception. Files stay on the PC except files downloaded to a phone, which may remain in its Downloads folder.
 
-The phone webpage can display PC clipboard text automatically while open, but cannot silently read or write the phone's clipboard on ordinary HTTP. Tap **Copy text to phone**; if the browser forbids copying, select/copy the highlighted text manually. Phone-to-PC clipboard updates require tapping **Send to PC clipboard**. Files are uploaded one at a time, up to 512 MiB per file, with enough free PC disk space required. The server listens on port 8765. Choose the correct LAN IP in the Windows dropdown; `127.0.0.1` works only on the PC.
+## EXE, development and tests
 
-## Security
+Double-click `BUILD_EXE_WINDOWS.bat` to build `dist\RatanakQuickShare.exe` on **Windows**, using only the same `.venv`. This repository is source code, not a prebuilt executable. To run manually: `.venv\Scripts\python.exe quickshare.py`. If relocating the source folder, recreate `.venv` in the new location.
 
-The QR pairing link acts as a password. A random token is exchanged for an HttpOnly, SameSite session cookie, and **Reset pairing** invalidates older sessions. Clipboard syncing is disabled by default. File downloads are limited to Outbox, uploads go to Inbox, and authenticated modification requests require a custom header. **HTTP traffic is not encrypted**: use only a trusted private Wi-Fi network, never expose port 8765 to the Internet or use public/hotel Wi-Fi. Other network devices and firewall configuration still matter. Keep pairing links and sensitive clipboard text private. Close the Windows window to stop sharing.
-
-## Project layout and tests
-
-- `quickshare.py`: Tkinter Windows UI, QR pairing and clipboard sync.
-- `server.py`: Python standard-library HTTP server, pairing, authentication, file transfers.
-- `assets/`: mobile-friendly HTML, CSS and JavaScript.
-- `START_WINDOWS.bat`, `BUILD_EXE_WINDOWS.bat`: isolated Windows launcher/build scripts.
-- `tests/`: server tests and GUI scroll regression test.
-
-After setting up `.venv`, run `.venv\Scripts\python.exe -m unittest discover -s tests -v`. The GUI test requires a working display; server tests do not require a GUI. Dependencies install into `.venv\Lib\site-packages` and nowhere globally.
+Run tests: `.venv\Scripts\python.exe -m unittest discover -s tests -v`. The optional Tk GUI test needs a display. The source is `quickshare.py` (Tkinter), `server.py` (standard-library HTTP backend), `assets/` (browser interface and approval polling), `tests/` and local-only Windows batch scripts. `.venv/`, `dist/`, and shared data folders are excluded by `.gitignore`.
