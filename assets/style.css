@@ -1,0 +1,21 @@
+:root{color-scheme:light;--bg:#f4f7fc;--ink:#15213a;--muted:#687792;--line:#e2e8f1;--accent:#345ef4;--accent-dark:#2448c7;--mint:#dcf9ec;--mint-ink:#117147;font-family:Inter,"Segoe UI",system-ui,-apple-system,sans-serif}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font-size:15px;line-height:1.48}
+.container{max-width:640px;margin:0 auto;padding:20px 17px 40px}
+.header,.logo,.panel-heading,.file,.file-details{display:flex;align-items:center}
+.header,.panel-heading,.file{justify-content:space-between;gap:12px}
+.logo{gap:10px}.logo-icon{height:40px;width:40px;background:#132243;color:#fff;border-radius:13px;display:grid;place-items:center;font-size:27px;font-weight:700}
+h1{font-size:20px;line-height:1.1;letter-spacing:-.7px;margin:0}.logo p{margin:2px 0 0;font-size:11px;color:var(--muted);font-weight:700;letter-spacing:1.1px;text-transform:uppercase}
+.pill,.tag{white-space:nowrap;border-radius:999px;padding:6px 11px;font-size:11px;font-weight:800;background:#edf1f7;color:#60708a}
+.pill.connected{background:var(--mint);color:var(--mint-ink)}.pill.disconnected{background:#fff0f0;color:#b13b3b}
+.hero{padding:30px 3px 19px}.hero h2{margin:0;font-size:clamp(25px,7vw,34px);letter-spacing:-1.2px;line-height:1.15}.hero p{color:var(--muted);margin:10px 0 0;max-width:470px}
+.panel{background:#fff;border:1px solid var(--line);border-radius:21px;padding:21px;margin-bottom:15px;box-shadow:0 9px 30px rgba(27,49,91,.035)}
+.panel h2{font-size:21px;margin:2px 0 0;letter-spacing:-.6px}.eyebrow{font-weight:800;font-size:10px;color:#5774d0;letter-spacing:1.3px}.support,.note{color:var(--muted);font-size:13px}.support{margin:12px 0 19px}.note{min-height:18px;margin:9px 0 0}.note.error{color:#b63c43}.note.success{color:#17704b}
+.fieldlabel{display:block;font-size:12px;font-weight:750;margin-bottom:8px}.text-field{width:100%;resize:vertical;border:1px solid #d9e1ed;background:#f9fbff;color:var(--ink);padding:13px;border-radius:12px;font:inherit;outline:none;min-height:96px}.text-field:focus{border-color:#6484ff;box-shadow:0 0 0 3px rgba(52,94,244,.1)}.text-field[readonly]{background:#f5f8fe}
+.button{display:flex;justify-content:center;align-items:center;gap:7px;width:100%;border:0;border-radius:12px;padding:12px 14px;margin-top:11px;font:inherit;font-weight:750;cursor:pointer;transition:background .15s}.button:disabled{opacity:.46;cursor:not-allowed}.button-primary{background:var(--accent);color:white}.button-primary:not(:disabled):hover{background:var(--accent-dark)}.button-secondary{background:#e8eeff;color:#2b4cc1}.button-secondary:not(:disabled):hover{background:#dbe6ff}
+.section-divider{border-top:1px solid var(--line);margin:23px 0 18px}
+.upload-zone{border:1.5px dashed #acc0e7;border-radius:15px;background:#f7faff;min-height:138px;display:flex;flex-direction:column;justify-content:center;align-items:center;gap:2px;cursor:pointer;text-align:center;padding:15px}.upload-zone:hover{border-color:var(--accent)}.upload-icon{display:grid;place-items:center;border-radius:12px;color:#315de8;background:#e8efff;font-size:24px;width:40px;height:40px;margin-bottom:4px}.upload-zone strong{font-size:14px}.upload-zone span:last-child{font-size:12px;color:var(--muted)}#fileInput{position:absolute;left:-9999px;width:1px;height:1px}
+.file-list{display:flex;flex-direction:column;gap:9px}.file{padding:11px 0;border-top:1px solid var(--line)}.file-details{gap:11px;min-width:0;flex:1}.file-icon{background:#eff3ff;color:#345ef4;border-radius:10px;display:grid;place-items:center;min-width:38px;height:38px;font-size:19px;font-weight:800}.file-name{font-size:13px;font-weight:750;overflow-wrap:anywhere}.file-meta{font-size:11px;color:var(--muted);margin-top:2px}.file a{font-size:12px;background:#eff3ff;padding:9px 11px;text-decoration:none;border-radius:9px;color:#2b4bc0;font-weight:800;white-space:nowrap}.file a:hover{background:#dde7ff}.empty{color:var(--muted);font-size:13px;text-align:center;padding:13px 0}
+footer{text-align:center;font-size:11px;color:var(--muted);padding:10px 5px 0}
+@media(min-width:700px){.container{padding-top:29px}.panel{padding:26px}.hero{padding-top:38px}}
+@media(max-width:355px){.container{padding-left:10px;padding-right:10px}.panel{padding:15px}.header{gap:5px}}
