@@ -1,0 +1,29 @@
+name: Apply RatanakQuickShare v1.4 source update
+on:
+  push:
+    paths:
+      - releases/v14-code.patch.gz
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  upgrade:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+      - name: Apply source changes
+        run: |
+          gzip -dc releases/v14-code.patch.gz > /tmp/v14-code.patch
+          git apply --check /tmp/v14-code.patch
+          git apply /tmp/v14-code.patch
+      - name: Run server regression tests
+        run: python -m unittest discover -s tests -v
+      - name: Commit verified source update
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add server.py quickshare.py assets/pair.js assets/app.js tests/test_server.py
+          git commit -m 'Implement v1.4 LAN security hardening'
+          git push
