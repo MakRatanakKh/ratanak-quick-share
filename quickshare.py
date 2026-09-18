@@ -68,7 +68,7 @@ class RatanakQuickShareWindow:
         self.clip_status = tk.StringVar(value="Clipboard syncing is off")
         self.link_var = tk.StringVar()
         self.build_ui()
-        self.ip.trace_add("write", lambda *_: self.update_qr())
+        self.ip.trace_add("write", lambda *_: self.change_interface())
         self.start_server()
         self.root.after(500, self.tick)
 
@@ -120,6 +120,17 @@ class RatanakQuickShareWindow:
         ttk.Button(link_actions, text="Copy pairing link", command=self.copy_link).pack(side="left", padx=(0, 8))
         ttk.Button(link_actions, text="Test in browser", command=self.open_browser).pack(side="left")
         ttk.Button(link_actions, text="Reset pairing", command=self.reset_pairing).pack(side="right")
+        ttk.Label(main, text="QR expires after 60 seconds • Each connection needs Windows approval.",
+                  style="Sub.TLabel").pack(anchor="w", pady=(8, 0))
+
+        ttk.Separator(main).pack(fill="x", pady=12)
+        ttk.Label(main, text="Device security", font=("Segoe UI", 12, "bold")).pack(anchor="w")
+        self.approvals_frame = ttk.Frame(main)
+        self.approvals_frame.pack(fill="x", pady=(5, 4))
+        ttk.Label(main, text="Connected browsers (sessions expire after 1 hour):", style="Sub.TLabel").pack(anchor="w")
+        self.devices_frame = ttk.Frame(main)
+        self.devices_frame.pack(fill="x", pady=(4, 0))
+        self._last_security_view = None
 
         ttk.Separator(main).pack(fill="x", pady=15)
         ttk.Label(main, text="Clipboard", font=("Segoe UI", 12, "bold")).pack(anchor="w")
@@ -190,7 +201,7 @@ class RatanakQuickShareWindow:
 
     def start_server(self):
         try:
-            self.server = make_server(self.state, app_assets(), port=PORT)
+            self.server = make_server(self.state, app_assets(), host=self.ip.get(), port=PORT)
         except OSError as error:
             self.message.set(f"Cannot start on port {PORT}: {error}")
             messagebox.showerror("RatanakQuickShare could not start", f"Port {PORT} may already be in use.\n\n{error}")
@@ -198,8 +209,57 @@ class RatanakQuickShareWindow:
             return
         self.running = True
         threading.Thread(target=self.server.serve_forever, name="RatanakQuickShareHTTP", daemon=True).start()
-        self.message.set(f"● Sharing server running on port {PORT}")
+        self.message.set(f"● Sharing on {self.ip.get()}:{PORT} (selected interface only)")
         self.update_qr()
+
+    def change_interface(self):
+        if self.server:
+            self.server.shutdown()
+            self.server.server_close()
+            self.server = None
+            self.running = False
+            self.state.reset_pairing()
+            self.start_server()
+        else:
+            self.update_qr()
+
+    def refresh_security_view(self):
+        pending = self.state.pending_requests()
+        sessions = self.state.session_list()
+        signature = (tuple(pending), tuple((token, label) for token, label, _ in sessions))
+        if signature == self._last_security_view:
+            return
+        self._last_security_view = signature
+        for frame in (self.approvals_frame, self.devices_frame):
+            for widget in frame.winfo_children():
+                widget.destroy()
+        if not pending:
+            ttk.Label(self.approvals_frame, text="No pending requests", style="Sub.TLabel").pack(anchor="w")
+        for ticket, code, ip in pending:
+            row = ttk.Frame(self.approvals_frame)
+            row.pack(fill="x", pady=3)
+            ttk.Label(row, text=f"Phone {ip} • code {code}").pack(side="left")
+            ttk.Button(row, text="Reject", command=lambda k=ticket: self.decide_pairing(k, False)).pack(side="right")
+            ttk.Button(row, text="Approve", command=lambda k=ticket: self.decide_pairing(k, True)).pack(side="right", padx=4)
+        if not sessions:
+            ttk.Label(self.devices_frame, text="No connected browsers", style="Sub.TLabel").pack(anchor="w")
+        for token, label, remaining in sessions:
+            row = ttk.Frame(self.devices_frame)
+            row.pack(fill="x", pady=2)
+            ttk.Label(row, text=label).pack(side="left")
+            ttk.Button(row, text="Disconnect", command=lambda k=token: self.revoke_device(k)).pack(side="right")
+
+    def decide_pairing(self, ticket, approve):
+        if self.state.decide(ticket, approve):
+            self.message.set("Connection approved." if approve else "Connection rejected.")
+        self._last_security_view = None
+        self.refresh_security_view()
+
+    def revoke_device(self, token):
+        self.state.revoke_session(token)
+        self.message.set("Device disconnected.")
+        self._last_security_view = None
+        self.refresh_security_view()
 
     def copy_link(self):
         self.root.clipboard_clear()
@@ -214,7 +274,8 @@ class RatanakQuickShareWindow:
     def reset_pairing(self):
         self.state.reset_pairing()
         self.update_qr()
-        self.message.set("Pairing reset. Previous phone sessions are disconnected.")
+        self.message.set("Pairing reset. All browser sessions and pending requests revoked.")
+        self._last_security_view = None
 
     def toggle_clipboard(self):
         self.state.set_clipboard_enabled(self.clip_enabled.get())
@@ -222,6 +283,13 @@ class RatanakQuickShareWindow:
                              else "Clipboard syncing is off")
 
     def tick(self):
+        if self.state.rotate_if_expired():
+            self.update_qr()
+        else:
+            # A scan consumes the visible QR immediately.
+            if self.state.pair_token not in self.link_var.get():
+                self.update_qr()
+        self.refresh_security_view()
         if self.clip_enabled.get():
             pending = self.state.take_pending_clipboard()
             if pending is not None:

@@ -148,7 +148,7 @@ uploadButton.addEventListener("click", async () => {
   let done = 0;
   try {
     for (const file of files) {
-      if (file.size > 512 * 1024 * 1024) throw new Error(`${file.name} exceeds the 512 MB upload limit.`);
+      if (file.size > 128 * 1024 * 1024) throw new Error(`${file.name} exceeds the 128 MiB upload limit.`);
       status(uploadNote, `Uploading ${done + 1} of ${files.length}: ${file.name} (${fileSize(file.size)})…`);
       const data = await api(`/api/upload?name=${encodeURIComponent(file.name)}`, {
         method: "POST", headers: { "Content-Type": "application/octet-stream" }, body: file

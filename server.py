@@ -10,6 +10,8 @@ import re
 import secrets
 import shutil
 import threading
+import time
+from ipaddress import ip_network
 from datetime import datetime
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -18,7 +20,14 @@ from urllib.parse import quote, unquote, urlsplit
 import uuid
 
 PORT = 8765
-MAX_UPLOAD_BYTES = 512 * 1024 * 1024
+MAX_UPLOAD_BYTES = 128 * 1024 * 1024
+MAX_INBOX_BYTES = 1024 * 1024 * 1024
+MAX_CONCURRENT_UPLOADS = 2
+MAX_CONCURRENT_CONNECTIONS = 12
+PAIR_SECONDS = 60
+APPROVAL_SECONDS = 90
+SESSION_SECONDS = 3600
+REQUEST_TIMEOUT = 12
 MAX_CLIPBOARD_CHARS = 50_000
 MAX_JSON_BYTES = 200_000
 FILE_LIST_LIMIT = 150
@@ -36,7 +45,11 @@ class ShareState:
         self.lock = threading.RLock()
         self.storage_lock = threading.Lock()
         self.pair_token = secrets.token_urlsafe(32)
-        self.session_token = secrets.token_urlsafe(32)
+        self.pair_deadline = time.monotonic() + PAIR_SECONDS
+        self.pending = {}  # ticket -> {code, ip, deadline, decision}
+        self.sessions = {}  # token -> {label, deadline, ip}
+        self.upload_slots = threading.BoundedSemaphore(MAX_CONCURRENT_UPLOADS)
+        self.upload_reserved = 0
         self.clipboard_enabled = False
         self.clipboard_text = ""
         self.clipboard_note = "Clipboard syncing is off. Enable it in the Windows app."
@@ -44,22 +57,92 @@ class ShareState:
         self.pending_clipboard: str | None = None
 
     def reset_pairing(self):
+        """Revoke every browser, pending approval and old QR in one operation."""
+        with self.lock:
+            self.pending.clear()
+            self.sessions.clear()
+            return self.new_pair_token()
+
+    def new_pair_token(self):
         with self.lock:
             self.pair_token = secrets.token_urlsafe(32)
-            self.session_token = secrets.token_urlsafe(32)
+            self.pair_deadline = time.monotonic() + PAIR_SECONDS
             return self.pair_token
 
-    def check_pairing(self, candidate: str):
+    def rotate_if_expired(self):
         with self.lock:
-            return hmac.compare_digest(candidate, self.pair_token)
+            if time.monotonic() >= self.pair_deadline:
+                self.new_pair_token()
+                return True
+            return False
 
-    def check_session(self, candidate: str):
+    def request_pair(self, candidate, ip):
         with self.lock:
-            return bool(candidate) and hmac.compare_digest(candidate, self.session_token)
+            self.pending = {key: value for key, value in self.pending.items()
+                            if value["deadline"] > time.monotonic()}
+            if not (time.monotonic() < self.pair_deadline and
+                    hmac.compare_digest(candidate, self.pair_token)):
+                return None
+            if sum(1 for p in self.pending.values() if p["decision"] == "waiting") >= 3:
+                return None
+            # Consume immediately; a second scan cannot replay the same code.
+            self.new_pair_token()
+            ticket = secrets.token_urlsafe(32)
+            self.pending[ticket] = dict(code=f"{secrets.randbelow(1000000):06d}",
+                                        ip=ip, deadline=time.monotonic() + APPROVAL_SECONDS,
+                                        decision="waiting")
+            return ticket, self.pending[ticket]["code"]
 
-    def get_session(self):
+    def pending_requests(self):
         with self.lock:
-            return self.session_token
+            now = time.monotonic()
+            return [(ticket, entry["code"], entry["ip"])
+                    for ticket, entry in self.pending.items()
+                    if entry["decision"] == "waiting" and entry["deadline"] > now]
+
+    def decide(self, ticket, approve):
+        with self.lock:
+            entry = self.pending.get(ticket)
+            if not entry or entry["decision"] != "waiting" or entry["deadline"] <= time.monotonic():
+                return False
+            entry["decision"] = "approved" if approve else "rejected"
+            return True
+
+    def pairing_status(self, ticket, ip):
+        with self.lock:
+            entry = self.pending.get(ticket)
+            if not entry or not hmac.compare_digest(entry["ip"], ip):
+                return "invalid", None
+            if entry["deadline"] <= time.monotonic():
+                self.pending.pop(ticket, None)
+                return "expired", None
+            if entry["decision"] != "approved":
+                return entry["decision"], None
+            self.pending.pop(ticket, None)
+            token = secrets.token_urlsafe(32)
+            self.sessions[token] = dict(label=f"Browser {len(self.sessions) + 1} ({ip})",
+                                        ip=ip, deadline=time.monotonic() + SESSION_SECONDS)
+            return "approved", token
+
+    def check_session(self, candidate, ip=None):
+        with self.lock:
+            for token, entry in list(self.sessions.items()):
+                if entry["deadline"] <= time.monotonic():
+                    del self.sessions[token]
+                    continue
+                if candidate and hmac.compare_digest(candidate, token) and (ip is None or ip == entry["ip"]):
+                    return True
+            return False
+
+    def session_list(self):
+        with self.lock:
+            now = time.monotonic()
+            return [(token, value["label"], max(0, int(value["deadline"] - now)))
+                    for token, value in self.sessions.items() if value["deadline"] > now]
+
+    def revoke_session(self, token):
+        with self.lock:
+            return self.sessions.pop(token, None) is not None
 
     def set_clipboard_enabled(self, enabled: bool):
         with self.lock:
@@ -185,10 +268,15 @@ def _cookie_value(cookie_string: str, key: str):
 def make_server(state: ShareState, assets: Path, host="0.0.0.0", port=PORT):
     """Create (but don't start) an HTTP server. Port 0 is handy for tests."""
     assets = Path(assets)
+    # Never accept traffic to arbitrary interfaces or from a different /24.
+    # This deliberately conservative /24 policy may exclude legitimate larger LANs.
+    bound_ip = ip_address(host) if host != "0.0.0.0" else None
+    allowed_net = ip_network(f"{bound_ip}/24", strict=False) if bound_ip and not bound_ip.is_loopback else None
 
     class Handler(BaseHTTPRequestHandler):
-        server_version = "RatanakQuickShare/1.0"
+        server_version = "RatanakQuickShare/1.4"
         sys_version = ""
+        timeout = REQUEST_TIMEOUT
 
         def log_message(self, format, *args):
             # Never log the pairing key, which is part of the initial URL.
@@ -218,7 +306,7 @@ def make_server(state: ShareState, assets: Path, host="0.0.0.0", port=PORT):
             self.send_json(status, {"error": message})
 
         def authorized(self):
-            return state.check_session(_cookie_value(self.headers.get("Cookie", ""), "quickshare_session"))
+            return state.check_session(_cookie_value(self.headers.get("Cookie", ""), "quickshare_session"), self.client_address[0])
 
         def authenticated_or_error(self):
             if self.authorized():
@@ -229,7 +317,12 @@ def make_server(state: ShareState, assets: Path, host="0.0.0.0", port=PORT):
         def safe_client(self):
             # A public internet address cannot be a local-network client.
             try:
-                return not ip_address(self.client_address[0]).is_global
+                client = ip_address(self.client_address[0])
+                if bound_ip and bound_ip.is_loopback:
+                    return client.is_loopback
+                if allowed_net:
+                    return client in allowed_net
+                return client.is_private or client.is_loopback
             except ValueError:
                 return False
 
@@ -241,7 +334,8 @@ def make_server(state: ShareState, assets: Path, host="0.0.0.0", port=PORT):
             try:
                 target = urlsplit("//" + host).hostname
                 address = ip_address(target)
-                return (address.version == 4 and not address.is_multicast and not address.is_unspecified and not address.is_reserved) or address.is_loopback
+                return (address == bound_ip if bound_ip is not None else
+                        ((address.is_private and not address.is_multicast and not address.is_unspecified) or address.is_loopback))
             except (ValueError, TypeError):
                 return False
 
@@ -259,6 +353,10 @@ def make_server(state: ShareState, assets: Path, host="0.0.0.0", port=PORT):
                     return False
             return True
 
+        def setup(self):
+            super().setup()
+            self.connection.settimeout(REQUEST_TIMEOUT)
+
         def do_GET(self):
             if not self.safe_client():
                 self.fail(HTTPStatus.FORBIDDEN, "Connections from public internet addresses are not allowed.")
@@ -267,13 +365,30 @@ def make_server(state: ShareState, assets: Path, host="0.0.0.0", port=PORT):
                 self.fail(HTTPStatus.BAD_REQUEST, "Use the local IP address shown by RatanakQuickShare.")
                 return
             route = urlsplit(self.path).path
-            if route.startswith("/pair/"):
+            if route.startswith("/pair/") and route != "/pair/status":
                 candidate = unquote(route[len("/pair/"):])
-                if state.check_pairing(candidate):
-                    cookie = f"quickshare_session={state.get_session()}; HttpOnly; SameSite=Strict; Path=/; Max-Age=86400"
-                    self.send_bytes(HTTPStatus.FOUND, b"", extra={"Location": "/", "Set-Cookie": cookie})
+                request = state.request_pair(candidate, self.client_address[0])
+                if not request:
+                    self.send_bytes(HTTPStatus.FORBIDDEN, b"Invalid, already used or expired QR code. Scan the current QR in Windows.")
+                    return
+                ticket, code = request
+                # The ticket is never logged and is not put in the browser URL.
+                cookie = f"qs_pending={ticket}; HttpOnly; SameSite=Strict; Path=/; Max-Age={APPROVAL_SECONDS}"
+                page = ("<!doctype html><meta name='viewport' content='width=device-width,initial-scale=1'>"
+                        "<title>Awaiting approval</title><h2>Approve on Windows</h2>"
+                        "<p>Verify that this code matches your Windows window:</p><h1>" + code + "</h1>"
+                        "<p id='status'>Waiting for approval…</p>"
+                        "<script src='/assets/pair.js' defer></script>")
+                self.send_bytes(HTTPStatus.OK, page.encode(), "text/html; charset=utf-8", {"Set-Cookie": cookie})
+                return
+            if route == "/pair/status":
+                ticket = _cookie_value(self.headers.get("Cookie", ""), "qs_pending")
+                result, token = state.pairing_status(ticket, self.client_address[0])
+                if token:
+                    cookie = f"quickshare_session={token}; HttpOnly; SameSite=Strict; Path=/; Max-Age={SESSION_SECONDS}"
+                    self.send_bytes(HTTPStatus.OK, b'{"status":"approved"}', "application/json", {"Set-Cookie": cookie})
                 else:
-                    self.send_bytes(HTTPStatus.FORBIDDEN, b"Invalid or expired pairing link. Reset pairing in the Windows app and scan its QR code again.")
+                    self.send_json(HTTPStatus.OK if result == "waiting" else HTTPStatus.FORBIDDEN, {"status": result})
                 return
             if route == "/":
                 if self.authorized():
@@ -286,6 +401,9 @@ def make_server(state: ShareState, assets: Path, host="0.0.0.0", port=PORT):
                 return
             if route == "/assets/app.js":
                 self.send_asset("app.js", "text/javascript; charset=utf-8")
+                return
+            if route == "/assets/pair.js":
+                self.send_asset("pair.js", "text/javascript; charset=utf-8")
                 return
             if route == "/api/state":
                 if self.authenticated_or_error():
@@ -404,8 +522,19 @@ def make_server(state: ShareState, assets: Path, host="0.0.0.0", port=PORT):
                 self.fail(HTTPStatus.BAD_REQUEST, "A filename is required")
                 return
             cleaned = safe_filename(name)
+            if not state.upload_slots.acquire(blocking=False):
+                self.fail(HTTPStatus.TOO_MANY_REQUESTS, "Too many uploads. Retry shortly.")
+                return
             temporary = state.inbox / ("." + uuid.uuid4().hex + ".part")
+            reserved = False
             try:
+                with state.storage_lock:
+                    used = sum(f.stat().st_size for f in state.inbox.iterdir() if f.is_file())
+                    if used + state.upload_reserved + length > MAX_INBOX_BYTES:
+                        self.fail(HTTPStatus.INSUFFICIENT_STORAGE, "Inbox quota exceeded. Remove files first.")
+                        return
+                    state.upload_reserved += length
+                    reserved = True
                 with temporary.open("xb") as output:
                     remaining = length
                     while remaining:
@@ -418,13 +547,41 @@ def make_server(state: ShareState, assets: Path, host="0.0.0.0", port=PORT):
                     final_name = available_name(state.inbox, cleaned)
                     temporary.replace(state.inbox / final_name)
                 self.send_json(HTTPStatus.CREATED, {"ok": True, "name": final_name})
-            except (OSError, ConnectionError):
-                self.fail(HTTPStatus.INSUFFICIENT_STORAGE, "Could not save the upload")
+            except (OSError, ConnectionError, TimeoutError):
+                try:
+                    self.fail(HTTPStatus.INSUFFICIENT_STORAGE, "Upload interrupted or could not be saved")
+                except OSError:
+                    pass
             finally:
                 temporary.unlink(missing_ok=True)
+                if reserved:
+                    with state.storage_lock:
+                        state.upload_reserved -= length
+                state.upload_slots.release()
 
     class AppServer(ThreadingHTTPServer):
         daemon_threads = True
         block_on_close = False
+        request_queue_size = 8
+
+        def __init__(self, *args, **kwargs):
+            self.connection_slots = threading.BoundedSemaphore(MAX_CONCURRENT_CONNECTIONS)
+            super().__init__(*args, **kwargs)
+
+        def process_request(self, request, client_address):
+            if not self.connection_slots.acquire(blocking=False):
+                self.shutdown_request(request)
+                return
+            try:
+                super().process_request(request, client_address)
+            except BaseException:
+                self.connection_slots.release()
+                raise
+
+        def process_request_thread(self, request, client_address):
+            try:
+                super().process_request_thread(request, client_address)
+            finally:
+                self.connection_slots.release()
 
     return AppServer((host, port), Handler)
